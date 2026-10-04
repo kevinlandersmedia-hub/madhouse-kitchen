@@ -14,6 +14,9 @@ separate step (see "Future connector").
 |---|---|
 | `index.html` | Home-screen wrapper, served by GitHub Pages. Loads the Apps Script app full-screen with an icon. |
 | `apps-script/Code.gs` | Server code: recipe storage, link import, text parser, auto-tagging, keys. |
+| `apps-script/Menu.gs` | Weekly menu planner, sides pairing, pairings, role review, one-time v2 upgrade, one-time staples import. |
+| `apps-script/Conflicts.gs` | Calendar conflict checks: reads Family, Kevin, Hillary and work calendars (read-only) for 6:00–7:30 PM. |
+| `apps-script/Grocery.gs` | Grocery list: merges the week's ingredients, store sections, check-offs, added and every-week items. |
 | `apps-script/Index.html` | The app's screens. |
 | `apps-script/appsscript.json` | Apps Script manifest. |
 
@@ -21,7 +24,25 @@ separate step (see "Future connector").
 - Steps 1–2 built (2026-09-27): recipe library + automatic tagging.
 - 2026-09-29: split out from Madhouse. Removed the Madhouse key lookup (Kitchen now accepts only its own keys),
   moved from `/family/kitchen/` in the Madhouse repo to this repo, and moved the files out of `FamilyCommandCenter`.
-- Next: step 3, weekly menu generator (Mon–Fri, uses tags for variety, skips recipes over 60 min).
+- 2026-10-01: step 3 weekly menu planner (Week tab) deployed.
+- 2026-10-03 (version 8): meal roles + sides. Every recipe is a Complete meal, a Main (needs sides) or a Side
+  (Veggie / Starch / Salad & bread). Auto-sorted by rules, confirmed on the "Review roles" screen. Added Kevin's
+  sides (garlic zucchini & onions, pearl couscous with broth), panko tilapia, and 8 no-recipe "easy sides".
+  Week planner gives each Main one veggie + one starch (swap / pick / remove / add), "Good combo" saves the
+  pairing, and the whole-meal time = longest item + 5 min. New Protein options: Lamb, Game. New sheet tab: Pairings.
+- 2026-10-03 (version 9): step 4 grocery list (Groceries tab). Built from the week's saved menu (mains + sides);
+  the same ingredient across dinners is merged with amounts added up; sorted by store section (Produce, Bakery,
+  Meat & Seafood, Dairy & Eggs, Pantry, Sauces/Oils, Spices, Baking, Frozen, Other); staples always included.
+  Check off in the app (saved, so Hillary sees the same list), free-add items, every-week items, take an item
+  off for one week, move an item to another section (remembered), leave a whole dish or one part of a recipe
+  (e.g. a from-scratch bread) off the list, Share / Copy as text. Opens next week's list on Sat/Sun.
+  New sheet tabs: Grocery (one row per week), Weekly items. Section moves live in script property GROCERY_SECTIONS.
+- 2026-10-03 (version 10): step 5 calendar conflict checks. Week tab flags any timed event between 6:00 and 7:30 PM on
+  the Family, Kevin, Hillary or Kevin's work calendar (read-only; app never edits calendars or changes dinners on its own),
+  shows who's busy, and offers Quicker meal (30 min or less), Move to another night, Leftovers, Eating out, or It's fine
+  (hides that event for that night). New Menus column ok_events; out nights can carry a note (Leftovers / Eating out).
+  Needs the calendar.readonly scope (Kevin authorized it 2026-10-03 via authorizeCalendars).
+- Next: step 6, phone app. (Instacart ordering is step 7 and still parked.)
 
 ## What it does
 - **Add a recipe three ways:** paste the whole recipe text, import it from a link (reads the recipe data most big
@@ -39,7 +60,8 @@ Lost or leaked link: set the person in `resetKeyFor`, Run, and send the new link
 Kids' "Dinner Suggestions" comes later (build step 8) with their own Kitchen keys.
 
 ## Data
-Sheet "Madhouse Kitchen – Data" in Kevin's Drive, tab **Recipes**. One row per recipe; ingredients and steps are
+Sheet "Madhouse Kitchen – Data" in Kevin's Drive, tabs **Recipes**, **Menus** (one row per night, sides as JSON), **Pairings** (main, side, liked/approved/no), **Grocery** (one row per week: check-offs, removed and added items as JSON) and **Weekly items** (one item per row).
+Recipes tab One row per recipe; ingredients and steps are
 stored as JSON. Deleting in the app only marks the row deleted.
 
 ## Updating the code
@@ -47,7 +69,7 @@ Edit in the Apps Script editor → Save → Deploy → Manage deployments → pe
 Keep this repo in sync with what's deployed.
 
 ## Build plan
-1. Recipe input ✅  2. Auto-tagging ✅  3. Weekly menu generator  4. Grocery list  5. Calendar conflict checks
+1. Recipe input ✅  2. Auto-tagging ✅  3. Weekly menu generator ✅ (+ mains & sides) 4. Grocery list ✅  5. Calendar conflict checks ✅
 6. Phone app  7. Ordering (Publix / Walmart / Instacart)  8. Kids' suggestion list
 
 ## Future connector (not built — do not add without Kevin's go-ahead)
