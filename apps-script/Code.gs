@@ -26,7 +26,7 @@ const KCFG = {
   TARGET_LIBRARY: [20, 50],
   RECIPE_COLS: ['id', 'name', 'source', 'url', 'image', 'servings', 'prep_min', 'cook_min', 'total_min', 'oven',
     'ingredients', 'steps', 'notes', 'cuisine', 'protein', 'category', 'auto_tags', 'locked', 'holiday',
-    'created_by', 'created_at', 'updated_by', 'updated_at', 'deleted']
+    'created_by', 'created_at', 'updated_by', 'updated_at', 'deleted', 'role', 'side_type', 'easy', 'reviewed']
 };
 
 /* ───────────────────────────── entry point ───────────────────────────── */
@@ -65,6 +65,7 @@ function doGet(e) {
 
 function api_list(key) {
   auth_(key);
+  ensureV2_();
   return listRecipes_();
 }
 
@@ -86,7 +87,9 @@ function api_importUrl(key, url) {
   if (code === 401 || code === 402 || code === 403 || code === 429) throw new Error('That site blocks apps from reading its recipes. Open the recipe, copy the whole thing, and use Paste instead.');
   if (code === 404) throw new Error('That page wasn\'t found — check the link.');
   if (code >= 400) throw new Error('That site said no (error ' + code + '). Try pasting the recipe instead.');
-  const draft = recipeFromHtml(res.getContentText(), url);
+  const html = res.getContentText();
+  const draft = recipeFromHtml(html, url);
+  if (draft && !draft.image) draft.image = ogImage_(html, url);   // fall back to the page's headline photo
   if (!draft) throw new Error('Couldn\'t find a recipe on that page. Copy the recipe text and use Paste instead.');
   return finishDraft(draft);
 }
@@ -162,6 +165,8 @@ function api_retagAll(key) {
       const t = finishDraft(r);
       sh.getRange(i + 1, cols.cuisine + 1, 1, 3).setValues([[t.cuisine, t.protein, t.category]]);
       sh.getRange(i + 1, cols.auto_tags + 1).setValue(JSON.stringify(t.auto));
+      sh.getRange(i + 1, cols.role + 1).setValue(t.role);
+      sh.getRange(i + 1, cols.side_type + 1).setValue(t.side_type || '');
     }
   });
   return listRecipes_();
@@ -187,7 +192,8 @@ function toRow_(r) {
     cuisine: r.cuisine, protein: r.protein, category: r.category,
     auto_tags: JSON.stringify(r.auto || {}), locked: JSON.stringify(r.locked || []), holiday: !!r.holiday,
     created_by: r.created_by || '', created_at: r.created_at || '', updated_by: r.updated_by || '', updated_at: r.updated_at || '',
-    deleted: false
+    deleted: false,
+    role: r.role || '', side_type: r.role === 'Side' ? (r.side_type || '') : '', easy: !!r.easy, reviewed: !!r.reviewed
   };
   return KCFG.RECIPE_COLS.map(c => v[c]);
 }
@@ -204,12 +210,19 @@ function fromRow_(row, cols) {
     cuisine: row[cols.cuisine], protein: row[cols.protein], category: row[cols.category],
     auto: j(row[cols.auto_tags], {}), locked: j(row[cols.locked], []), holiday: row[cols.holiday] === true,
     created_by: row[cols.created_by], created_at: iso(row[cols.created_at]),
-    updated_by: row[cols.updated_by], updated_at: iso(row[cols.updated_at])
+    updated_by: row[cols.updated_by], updated_at: iso(row[cols.updated_at]),
+    role: String(row[cols.role] || ''), side_type: String(row[cols.side_type] || ''),
+    easy: row[cols.easy] === true, reviewed: row[cols.reviewed] === true
   };
 }
 
 function colIndex_(sh) {
-  const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  let head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const missing = KCFG.RECIPE_COLS.filter(c => head.indexOf(c) < 0);
+  if (missing.length) {
+    sh.getRange(1, head.length + 1, 1, missing.length).setValues([missing]);
+    head = head.concat(missing);
+  }
   const out = {};
   KCFG.RECIPE_COLS.forEach(c => { out[c] = head.indexOf(c); if (out[c] < 0) throw new Error('Sheet is missing column ' + c + ' — run setup()'); });
   return out;
@@ -236,7 +249,9 @@ function normalizeDraft_(d) {
     notes: String(d.notes || '').slice(0, 4000), holiday: !!d.holiday,
     hints: d.hints || {},
     cuisine: d.cuisine, protein: d.protein, category: d.category,
-    locked: Array.isArray(d.locked) ? d.locked.filter(x => ['cuisine', 'protein', 'category'].indexOf(x) >= 0) : []
+    role: ROLE_OPTIONS.indexOf(d.role) >= 0 ? d.role : '', side_type: SIDE_TYPES.indexOf(d.side_type) >= 0 ? d.side_type : '',
+    easy: !!d.easy, reviewed: !!d.reviewed,
+    locked: Array.isArray(d.locked) ? d.locked.filter(x => ['cuisine', 'protein', 'category', 'role', 'side_type'].indexOf(x) >= 0) : []
   };
 }
 
@@ -252,6 +267,11 @@ function finishDraft(d) {
   ['cuisine', 'protein', 'category'].forEach(f => {
     if (locked.indexOf(f) < 0 || !d[f]) d[f] = auto[f];
   });
+  const ar = autoRole(d);
+  auto.role = ar.role; auto.side_type = ar.side_type; auto.why.role = ar.why; auto.sure.role = ar.sure;
+  if (locked.indexOf('role') < 0 || !d.role) d.role = ar.role;
+  if (d.role === 'Side') { if (locked.indexOf('side_type') < 0 || !d.side_type) d.side_type = ar.side_type || 'Veggie'; }
+  else d.side_type = '';
   d.auto = auto;
   d.warnings = [];
   if (!d.holiday) {
@@ -325,6 +345,17 @@ function recipeFromJsonLd_(n, url) {
   };
 }
 
+// The page's headline photo (og:image / twitter:image), used when the recipe data has no image.
+function ogImage_(html, url) {
+  const m = html.match(/<meta[^>]+(?:property|name)=["'](?:og:image(?::secure_url)?|twitter:image)["'][^>]*content=["']([^"']+)["']/i) ||
+            html.match(/<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image)["']/i);
+  if (!m) return '';
+  let src = m[1].replace(/&amp;/g, '&').trim();
+  if (/^\/\//.test(src)) src = 'https:' + src;
+  else if (/^\//.test(src)) { const o = String(url || '').match(/^https?:\/\/[^\/]+/i); src = o ? o[0] + src : ''; }
+  return /^https?:\/\//i.test(src) ? src : '';
+}
+
 function recipeFromMicrodata_(html, url) {
   const grab = prop => {
     const out = [], re = new RegExp('<([a-z0-9]+)[^>]*itemprop=["\']' + prop + '["\'][^>]*>([\\s\\S]*?)</\\1>', 'gi');
@@ -388,12 +419,18 @@ function parseRecipeText(text) {
   const raw = String(text || '').replace(/\r/g, '');
   const lines = raw.split('\n').map(s => s.replace(/\t/g, ' ').trim());
   const meta = extractMeta_(raw);
-  let name = '', mode = null, sawHeaders = false;
+  let name = '', mode = null, sawHeaders = false, url = '', image = '';
   const ingr = [], steps = [], notes = [], loose = [];
 
   lines.forEach(line => {
     if (!line) return;
     const clean = line.replace(/^[-•*▢☐□·◦▪●]\s*/, '');
+    // "Source: https://…" or a bare link line → the recipe's source link, not a step
+    // "Photo: https://…" → the card photo
+    const im = clean.match(/^(?:photo|image|picture|pic)\s*:?\s*(https?:\/\/\S+)\s*$/i);
+    if (im) { if (!image) image = im[1]; return; }
+    const um = clean.match(/^(?:source|original(?:\s+recipe)?|from|link|url|video)\s*:?\s*(https?:\/\/\S+)\s*$/i) || clean.match(/^(https?:\/\/\S+)$/i);
+    if (um) { if (!url) url = um[1]; return; }
     if (H_INGR.test(clean)) { mode = 'i'; sawHeaders = true; return; }
     if (H_STEPS.test(clean)) { mode = 's'; sawHeaders = true; return; }
     if (H_NOTES.test(clean)) { mode = 'n'; sawHeaders = true; return; }
@@ -434,7 +471,7 @@ function parseRecipeText(text) {
   });
 
   return {
-    name: name, source: 'paste', url: '', image: '',
+    name: name, source: 'paste', url: url, image: image,
     servings: meta.servings, prep_min: meta.prep, cook_min: meta.cook, total_min: meta.total, oven: meta.oven,
     ingredients: ingr.map(parseIngredient), steps: cleanSteps, notes: notes.join('\n'),
     hints: {}, locked: [], described: described, sawHeaders: sawHeaders
@@ -596,7 +633,9 @@ function ingredientsFromSentences_(t) {
 
 const TAG_OPTIONS = {
   cuisine: ['American', 'Italian', 'Mexican', 'Asian', 'Chinese', 'Japanese', 'Thai', 'Korean', 'Indian', 'Mediterranean', 'Southern & Cajun', 'BBQ', 'French', 'Other'],
-  protein: ['Chicken', 'Beef', 'Pork', 'Turkey', 'Seafood', 'Vegetarian'],
+  protein: ['Chicken', 'Beef', 'Pork', 'Turkey', 'Lamb', 'Seafood', 'Game', 'Vegetarian'],
+  role: ['Complete meal', 'Main', 'Side'],
+  side_type: ['Veggie', 'Starch', 'Salad / bread'],
   category: ['Pasta', 'Tacos & Wraps', 'Soup, Stew & Chili', 'Casserole & Bake', 'Stir-fry & Noodles', 'Rice & Bowls', 'Sandwiches & Burgers',
     'Salad', 'Pizza & Flatbread', 'Sheet Pan & Roast', 'Grill', 'Skillet & Sides']
 };
@@ -641,6 +680,8 @@ const PROTEIN_KW = {
   Beef: ['beef', 'steak', 'sirloin', 'brisket', 'chuck', 'hamburger', 'flank', 'ribeye', 'rib eye', 'short rib', 'ground chuck', 'tri-tip', 'tri tip', 'skirt', 'filet mignon', 'veal', 'meatball'],
   Pork: ['pork', 'bacon', 'ham', 'sausage', 'chorizo', 'prosciutto', 'pancetta', 'carnitas', 'andouille', 'kielbasa', 'bratwurst', 'brats', 'pepperoni', 'salami', 'hot dog', 'baby back', 'spare ribs'],
   Turkey: ['turkey'],
+  Lamb: ['lamb', 'mutton'],
+  Game: ['venison', 'rabbit', 'bear meat', 'bison', 'elk', 'wild boar', 'duck', 'quail', 'pheasant'],
   Seafood: ['shrimp', 'salmon', 'tilapia', 'cod', 'fish', 'tuna', 'crab', 'scallop', 'mahi', 'halibut', 'lobster', 'mussel', 'clam', 'catfish', 'prawn', 'grouper', 'snapper', 'trout', 'swordfish', 'crawfish', 'haddock', 'flounder'],
   Vegetarian: ['tofu', 'tempeh', 'chickpea', 'lentil', 'paneer', 'black bean', 'seitan', 'veggie', 'vegetarian', 'meatless', 'impossible', 'beyond meat']
 };
@@ -723,7 +764,7 @@ function autoTag(r) {
     }));
   });
   let protein = 'Vegetarian', pBest = 0;
-  ['Chicken', 'Beef', 'Pork', 'Turkey', 'Seafood'].forEach(p => { if (pScore[p] > pBest) { pBest = pScore[p]; protein = p; } });
+  ['Chicken', 'Beef', 'Pork', 'Turkey', 'Lamb', 'Seafood', 'Game'].forEach(p => { if (pScore[p] > pBest) { pBest = pScore[p]; protein = p; } });
   let proteinWhy;
   if (pBest < 2) { protein = 'Vegetarian'; proteinWhy = 'No meat or seafood found in the ingredients'; }
   else proteinWhy = 'Found ' + pWhy[protein].slice(0, 3).join(', ');
@@ -761,6 +802,93 @@ function autoTag(r) {
     why: { cuisine: cuisineWhy, protein: proteinWhy, category: categoryWhy },
     sure: { cuisine: cBest >= 6, protein: pBest >= 6 || protein === 'Vegetarian', category: kBest >= 9 }
   };
+}
+
+/* ── meal role: complete meal / main that needs sides / side ── */
+
+const ROLE_OPTIONS = ['Complete meal', 'Main', 'Side'];
+const SIDE_TYPES = ['Veggie', 'Starch', 'Salad / bread'];
+const SIDE_NAME_RE = /\b(sides?|pilaf|mashed|smashed|roasted (?:potato|veg|vegetable|broccoli|carrot|asparagus|brussels|cauliflower|squash)|green beans?|asparagus|broccoli|broccolini|zucchini|squash|corn|elote|coleslaw|slaw|salad|couscous|quinoa|potato(?:es)?|fries|tots|rolls?|biscuits?|cornbread|garlic bread|bread|carrots?|brussels sprouts|spinach|cauliflower|mac (?:and|&|n) cheese|macaroni and cheese|baked beans|rice|ratatouille|byaldi|vegetables|veggies|polenta|grits|risotto)\b/i;
+const STARCH_RE = /\b(rice|pilaf|potato(?:es)?|fries|tots|couscous|quinoa|pasta|macaroni|mac (?:and|&|n) cheese|orzo|noodles?|polenta|grits|risotto|beans|stuffing)\b/i;
+const BREAD_SALAD_RE = /\b(salad|slaw|coleslaw|rolls?|biscuits?|cornbread|bread|naan|pita|focaccia)\b/i;
+const MEAL_CATS = ['Pasta', 'Soup, Stew & Chili', 'Rice & Bowls', 'Tacos & Wraps', 'Sandwiches & Burgers', 'Pizza & Flatbread', 'Stir-fry & Noodles', 'Salad'];
+// Starch in the ingredients means the dish already carries its own carb (rice skillet, sheet-pan potatoes…).
+const ING_STARCH_RE = /\b(rice|pasta|spaghetti|penne|noodles?|potato(?:es)?|gnocchi|tortillas?|buns?|orzo|risoni|couscous|quinoa|dumplings?|biscuits?|macaroni|shells|ziti|lasagna|lasagne|tortellini|ravioli|ramen|udon|pappardelle|linguine|fettuccine|sourdough|loaf)\b/i;
+const NOT_STARCH_RE = /\b(bread ?crumbs|panko|flour|starch|rice vinegar|rice wine|noodle water)\b/i;
+
+function sideTypeFor_(name) {
+  if (/\b(salad|slaw|coleslaw)\b/i.test(name)) return 'Salad / bread';
+  if (STARCH_RE.test(name)) return 'Starch';
+  if (BREAD_SALAD_RE.test(name)) return 'Salad / bread';
+  return 'Veggie';
+}
+
+function autoRole(r) {
+  const name = String(r.name || '');
+  const hintK = String((r.hints && r.hints.category) || (r.auto && r.auto.hints && r.auto.hints.category) || '').toLowerCase();
+  const meaty = r.protein && r.protein !== 'Vegetarian';
+  const notSide = r.category === 'Soup, Stew & Chili' || /\b(soup|stew|chili|chowder|rotolo|lasagna|casserole|bake|pizza|sandwich|burger|tacos?|bowl)\b/i.test(name);
+  if (!notSide && (/\bside/.test(hintK) || (!meaty && SIDE_NAME_RE.test(name)))) {
+    return { role: 'Side', side_type: sideTypeFor_(name), sure: /\bside/.test(hintK), why: /\bside/.test(hintK) ? 'Site files it as a side dish' : 'No meat, and the name sounds like a side ("' + (name.match(SIDE_NAME_RE) || [''])[0] + '")' };
+  }
+  if (MEAL_CATS.indexOf(r.category) >= 0) return { role: 'Complete meal', side_type: '', sure: true, why: r.category + ' dishes are a full dinner on their own' };
+  const ingr = (r.ingredients || []).filter(i => !i.header).map(i => String(i.item || i.raw || ''));
+  const carb = ingr.find(t => ING_STARCH_RE.test(t) && !NOT_STARCH_RE.test(t));
+  if (carb) return { role: 'Complete meal', side_type: '', sure: false, why: 'Has its own starch (' + carb + '), so it probably doesn\'t need sides' };
+  if (!meaty && r.protein !== 'Vegetarian') return { role: 'Complete meal', side_type: '', sure: false, why: 'Couldn\'t tell — filed as a complete meal' };
+  return { role: 'Main', side_type: '', sure: r.category === 'Grill' || r.category === 'Skillet & Sides', why: 'A ' + String(r.protein || '').toLowerCase() + ' dish with no starch of its own — pair it with sides' };
+}
+
+/* ───────────────────────────── one-time bulk import (run from the editor only) ───────────────────────────── */
+// Reads the "Kitchen Import" Google Sheets (columns: site, url, notes, data). A row with data (recipe JSON pulled
+// through the browser) is read directly; a row without data is fetched like "From a link". Same reader and
+// auto-tagging as a normal import. Skips links already in the library. Not callable from the web app.
+const IMPORT_SHEETS_ = ['1-wzr_g0QEjrjgXbPluwOCNB1tsk15jfLhTBq409-6MI', '13VqXb5bz_gZE1vWFAUU8WCaolC9mpycMYwfxjvUJCHI', '11bdEo0HJ3oMTJfeyXJtg2ESKBLhWeYtED1ziYIjRE9g'];
+function cleanIngr_(s) {
+  return String(s || '').replace(/\(\(?\s*note\s*\d+\s*\)?\)/gi, '').replace(/\(\(/g, '(').replace(/\)\)/g, ')')
+    .replace(/\(\s*,\s*/g, '(').replace(/\(\s*\)/g, '').replace(/\s+,/g, ',').replace(/\s{2,}/g, ' ').trim();
+}
+function runBulkImport() {
+  const norm = u => String(u || '').replace(/[?#].*$/, '').replace(/\/$/, '');
+  const have = {};
+  listRecipes_().forEach(r => { if (r.url) have[norm(r.url)] = 1; });
+  const rows = [], log = [], now = new Date();
+  IMPORT_SHEETS_.forEach(id => {
+    const vals = SpreadsheetApp.openById(id).getSheets()[0].getDataRange().getValues();
+    const h = vals[0].map(String);
+    const ci = n => h.indexOf(n);
+    vals.slice(1).forEach(v => {
+      const site = v[ci('site')], url = String(v[ci('url')] || '').trim(), notes = String(v[ci('notes')] || ''), data = String(v[ci('data')] || '');
+      try {
+        if (!url) return;
+        if (have[norm(url)]) { log.push('SKIP (already in) ' + url); return; }
+        let html;
+        if (data) {
+          const j = JSON.parse(data);
+          html = '<script type="application/ld+json">' + JSON.stringify(j) + '</script>';
+        } else {
+          const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36', 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' } });
+          if (res.getResponseCode() >= 400) throw new Error('site said ' + res.getResponseCode());
+          html = res.getContentText();
+        }
+        const d = recipeFromHtml(html, url);
+        if (!d) throw new Error('no recipe found');
+        if (!d.image) d.image = ogImage_(html, url);
+        d.ingredients = (d.ingredients || []).map(i => cleanIngr_(typeof i === 'string' ? i : (i.raw || ''))).filter(Boolean);
+        if (notes) d.notes = (d.notes ? d.notes + '\n' : '') + notes;
+        d.source = 'url'; d.url = url;
+        const r = finishDraft(normalizeDraft_(d));
+        if (!r.name || !r.ingredients.length) throw new Error('missing name or ingredients');
+        r.id = Utilities.getUuid(); r.created_by = 'kevin'; r.created_at = now; r.updated_by = 'kevin'; r.updated_at = now;
+        rows.push(toRow_(r)); have[norm(url)] = 1;
+        log.push('OK ' + site + ' | ' + r.name + ' | ' + (r.total_min == null ? '?' : r.total_min) + ' min | ' + [r.cuisine, r.protein, r.category].join('/') + (r.image ? '' : ' | NO PHOTO'));
+      } catch (err) { log.push('FAIL ' + site + ' ' + url + ' — ' + (err.message || err)); }
+    });
+  });
+  if (rows.length) withLock_(() => { const sh = sheet_('Recipes'); sh.getRange(sh.getLastRow() + 1, 1, rows.length, KCFG.RECIPE_COLS.length).setValues(rows); });
+  console.log('Saved ' + rows.length + ' recipes');
+  log.forEach(l => console.log(l));
 }
 
 /* ───────────────────────────── setup (run once from the editor) ───────────────────────────── */
