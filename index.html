@@ -27,10 +27,11 @@
 /* Madhouse Kitchen — home-screen wrapper for the standalone repo
    kevinlandersmedia-hub/madhouse-kitchen (GitHub Pages).
    Link: https://kevinlandersmedia-hub.github.io/madhouse-kitchen/?k=<Kitchen key>
-   Uses Kitchen's OWN personal keys (run showKeys in the Apps Script editor).
+   2026-10-11: now opens Madhouse Kitchen BETA (the family's Kitchen from here on), so the
+   key in the link must be a Kitchen Beta key (run showKeys in the Beta editor).
    Separate from the Madhouse family app on purpose. */
 (function(){
-  var APP = 'https://script.google.com/macros/s/AKfycbwrJCSBAvQSryvIVcgamnzaYc2YPWqCXv9QxSEh97DmqdU1e-DFysqb8eKGxvpLC3GG/exec';
+  var APP = 'https://script.google.com/macros/s/AKfycbzS_lDHT2oHNqV5g3g0CumSdEGijws8q7Ggu8S1-Hc1gwtEvX3oUozd6bZfgTQunCGVkg/exec';
   var q = new URLSearchParams(location.search), key = q.get('k') || '';
   if (!/^[0-9a-f]{40}$/.test(key)) {
     document.body.innerHTML = '<div class="msg">This link is missing its personal Kitchen key. Ask Kevin for your link.</div>';
